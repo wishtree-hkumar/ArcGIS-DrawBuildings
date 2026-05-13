@@ -1,6 +1,6 @@
 import { useBuildingStore } from "../context/BuildingContext";
 import { makeBuildingGraphics } from "../utils/geometryBuilder";
-import { SavedBuilding, RoofType } from "../types/building.types";
+import { SavedBuilding, RoofType, Obstacle, BuildingParams } from "../types/building.types";
 import { toLat, toLng, setEdgeLength } from "../utils/geoUtils";
 
 export function useMapActions() {
@@ -9,7 +9,7 @@ export function useMapActions() {
         selectedBuildingIdRef, setSelectedBuildingId,
         placementModeRef, setPlacementMode,
         pendingCustomRef, setCustomDrawMode,
-        roofTypeRef, paramsRef, setParams,
+        paramsRef,
         drawLayerRef, sketchRef,
         setCustomRev
     } = useBuildingStore();
@@ -101,14 +101,36 @@ export function useMapActions() {
         URL.revokeObjectURL(url);
     };
 
-    const mutateCustom = (fn: (b: SavedBuilding) => void) => {
+    const mutateBuilding = (fn: (b: SavedBuilding) => void) => {
         const bid = selectedBuildingIdRef.current;
         if (!bid) return;
         const b = buildingsRef.current[bid];
-        if (!b?.custom) return;
+        if (!b) return;
         fn(b);
         renderBuilding(b);
         setCustomRev((r) => r + 1);
+    };
+
+    const mutateCustom = (fn: (b: SavedBuilding) => void) => {
+        mutateBuilding((b) => { if (b.custom) fn(b); });
+    };
+
+    const setParam = <K extends keyof BuildingParams>(key: K, value: BuildingParams[K]) => {
+        mutateBuilding((b) => { b.params[key] = value; });
+    };
+
+    const setRoofTypeOf = (rt: RoofType) => {
+        mutateBuilding((b) => {
+            if (b.custom) {
+                b.roofType = rt === "monopitch" ? "monopitch" : "flat";
+            } else {
+                b.roofType = rt;
+            }
+        });
+    };
+
+    const setObstaclesOf = (updater: (prev: Obstacle[]) => Obstacle[]) => {
+        mutateBuilding((b) => { b.obstacles = updater(b.obstacles); });
     };
 
     const setCustomEdgeLength = (edgeIdx: number, meters: number) => {
@@ -121,15 +143,10 @@ export function useMapActions() {
         });
     };
 
-    const setCustomRoofType = (rt: RoofType) => {
-        mutateCustom((b) => {
-            b.roofType = rt === "monopitch" ? "monopitch" : "flat";
-        });
-    };
-
-    const setCustomWallHeight = (wh: number) => mutateCustom((b) => { b.params.wh = wh; });
-    const setCustomParapet = (p: number) => mutateCustom((b) => { b.params.parapet = p; });
-    const setCustomPitch = (pct: number) => mutateCustom((b) => { b.params.pitch = pct; });
+    const setCustomRoofType = (rt: RoofType) => setRoofTypeOf(rt);
+    const setCustomWallHeight = (wh: number) => setParam("wh", wh);
+    const setCustomParapet = (p: number) => setParam("parapet", p);
+    const setCustomPitch = (pct: number) => setParam("pitch", pct);
     
     return {
         renderBuilding,
@@ -139,7 +156,11 @@ export function useMapActions() {
         deleteSelected,
         duplicateSelected,
         exportAll,
+        mutateBuilding,
         mutateCustom,
+        setParam,
+        setRoofTypeOf,
+        setObstaclesOf,
         setCustomEdgeLength,
         setCustomRoofType,
         setCustomWallHeight,
