@@ -1,0 +1,20 @@
+node_modules
+dist
+.DS_Store
+*.local
+.vite
+CLAUDE.md
+
+# Graphify
+graphify-out/
+.venv_graphify/
+.graphifyignore
+
+# AI / tooling (optional)
+.claude/
+
+# Agents (only if generated)
+.agents/
+
+# Stray files
+--path-format=absolute*
