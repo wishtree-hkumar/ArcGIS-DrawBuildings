@@ -5,6 +5,12 @@ body, html { margin: 0; padding: 0; overflow: hidden; width: 100vw; height: 100v
     box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 14px 16px;
     font-family: 'Space Grotesk', -apple-system, sans-serif; font-size: 13px; }
 .opv-panel.left { left: 16px; right: auto; width: 270px; top: 16px; }
+.opv-panel { scrollbar-width: thin; scrollbar-color: #252d40 transparent; }
+.opv-panel::-webkit-scrollbar { width: 8px; }
+.opv-panel::-webkit-scrollbar-track { background: transparent; }
+.opv-panel::-webkit-scrollbar-thumb { background: #252d40; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+.opv-panel::-webkit-scrollbar-thumb:hover { background: #00d4ff; background-clip: padding-box; border: 2px solid transparent; }
+.opv-panel::-webkit-scrollbar-corner { background: transparent; }
 .opv-section { margin-bottom: 14px; }
 .opv-section-title { font-size: 10px; font-weight: 600; letter-spacing: .12em;
     text-transform: uppercase; color: #64748b; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }

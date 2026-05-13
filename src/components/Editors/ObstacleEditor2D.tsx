@@ -1,9 +1,19 @@
 import React, { useRef, useEffect } from "react";
 import { useBuildingStore } from "../../context/BuildingContext";
+import { useMapActions } from "../../hooks/useMapActions";
 import { OBSTACLE_PRESETS } from "../../types/building.types";
 
 export const ObstacleEditor2D: React.FC = () => {
-    const { params, obstacles, setObstacles, roofType, selectedObsIdx, obsSize } = useBuildingStore();
+    const { selectedBuildingId, buildingsRef, customRev, selectedObsIdx, obsSize } = useBuildingStore();
+    const { setObstaclesOf } = useMapActions();
+
+    void customRev;
+
+    const selectedBuilding = selectedBuildingId ? buildingsRef.current[selectedBuildingId] : null;
+    const params = selectedBuilding?.params;
+    const roofType = selectedBuilding?.roofType ?? "flat";
+    const obstacles = selectedBuilding?.obstacles ?? [];
+
     const obsCanvasRef = useRef<HTMLCanvasElement>(null);
     const obsHoverRef = useRef<number | null>(null);
     const obsDragRef = useRef<{ idx: number; offRx: number; offRy: number } | null>(null);
@@ -16,6 +26,16 @@ export const ObstacleEditor2D: React.FC = () => {
         const cw = canvas.width;
         const ch = canvas.height;
         ctx.clearRect(0, 0, cw, ch);
+
+        if (!params) {
+            ctx.fillStyle = "rgba(30,37,53,0.4)";
+            ctx.fillRect(0, 0, cw, ch);
+            ctx.fillStyle = "#64748b";
+            ctx.font = "500 11px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("Select a building to edit obstacles", cw / 2, ch / 2);
+            return;
+        }
 
         const aspect = params.len / params.wid;
         const maxW = cw - 20;
@@ -34,7 +54,7 @@ export const ObstacleEditor2D: React.FC = () => {
 
         ctx.fillStyle = "rgba(30,37,53,0.85)";
         ctx.fillRect(ox, oy, dw, dh);
-        
+
         if (roofType === "gabled") {
             ctx.strokeStyle = "rgba(0,255,157,0.6)";
             ctx.lineWidth = 1.5;
@@ -79,7 +99,7 @@ export const ObstacleEditor2D: React.FC = () => {
 
     const editorHitTest = (cx: number, cy: number): number | null => {
         const canvas = obsCanvasRef.current;
-        if (!canvas) return null;
+        if (!canvas || !params) return null;
         const cw = canvas.width;
         const ch = canvas.height;
         const aspect = params.len / params.wid;
@@ -104,6 +124,7 @@ export const ObstacleEditor2D: React.FC = () => {
 
     const editorToMeters = (cx: number, cy: number) => {
         const canvas = obsCanvasRef.current!;
+        if (!params) return { rx: 0, ry: 0 };
         const cw = canvas.width;
         const ch = canvas.height;
         const aspect = params.len / params.wid;
@@ -120,15 +141,16 @@ export const ObstacleEditor2D: React.FC = () => {
 
     useEffect(() => {
         drawEditor();
-    }, [obstacles, params, roofType]);
+    }, [obstacles, params, roofType, selectedBuildingId]);
 
     const onEditorMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (!params) return;
         const rect = obsCanvasRef.current!.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         if (e.button === 2) {
             const i = editorHitTest(cx, cy);
-            if (i !== null) setObstacles((o) => o.filter((_, idx) => idx !== i));
+            if (i !== null) setObstaclesOf((o) => o.filter((_, idx) => idx !== i));
             return;
         }
         const idx = editorHitTest(cx, cy);
@@ -140,18 +162,19 @@ export const ObstacleEditor2D: React.FC = () => {
             const { rx, ry } = editorToMeters(cx, cy);
             if (Math.abs(rx) > params.len / 2 || Math.abs(ry) > params.wid / 2) return;
             const preset = OBSTACLE_PRESETS[selectedObsIdx];
-            setObstacles((arr) => [...arr, { type: preset.type, color: preset.color, rx, ry, ...obsSize }]);
+            setObstaclesOf((arr) => [...arr, { type: preset.type, color: preset.color, rx, ry, ...obsSize }]);
         }
     };
 
     const onEditorMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (!params) return;
         const rect = obsCanvasRef.current!.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         if (obsDragRef.current) {
             const { idx, offRx, offRy } = obsDragRef.current;
             const { rx, ry } = editorToMeters(cx, cy);
-            setObstacles((arr) =>
+            setObstaclesOf((arr) =>
                 arr.map((o, i) => {
                     if (i !== idx) return o;
                     return {
@@ -171,21 +194,16 @@ export const ObstacleEditor2D: React.FC = () => {
     const onEditorMouseUp = () => { obsDragRef.current = null; };
 
     return (
-        <>
-            <canvas
-                ref={obsCanvasRef}
-                width={290}
-                height={180}
-                style={{ width: "100%", marginTop: 8, borderRadius: 4, cursor: "crosshair", display: "block" }}
-                onMouseDown={onEditorMouseDown}
-                onMouseMove={onEditorMouseMove}
-                onMouseUp={onEditorMouseUp}
-                onMouseLeave={onEditorMouseUp}
-                onContextMenu={(e) => e.preventDefault()}
-            />
-            <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", marginTop: 4, fontFamily: "monospace" }}>
-                Click to place · Drag to move · Right-click delete
-            </div>
-        </>
+        <canvas
+            ref={obsCanvasRef}
+            width={290}
+            height={180}
+            style={{ width: "100%", marginTop: 8, borderRadius: 4, cursor: params ? "crosshair" : "not-allowed", display: "block", opacity: params ? 1 : 0.6 }}
+            onMouseDown={onEditorMouseDown}
+            onMouseMove={onEditorMouseMove}
+            onMouseUp={onEditorMouseUp}
+            onMouseLeave={onEditorMouseUp}
+            onContextMenu={(e) => e.preventDefault()}
+        />
     );
 };

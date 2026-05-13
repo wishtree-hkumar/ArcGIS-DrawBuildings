@@ -14,15 +14,13 @@ import { toLat, toLng } from "../utils/geoUtils";
 
 export function useArcGIS() {
     const mapRef = useRef<HTMLDivElement>(null);
-    const viewRef = useRef<SceneView | null>(null);
     const {
         buildingsRef, setBuildingsCount,
         selectedBuildingIdRef, setSelectedBuildingId,
         placementModeRef, setPlacementMode,
         pendingCustomRef, setCustomDrawMode,
         roofTypeRef, paramsRef, setParams,
-        drawLayerRef, sketchRef,
-        setCustomRev
+        drawLayerRef, sketchRef, viewRef,
     } = useBuildingStore();
 
     const renderBuilding = (b: SavedBuilding) => {
@@ -63,6 +61,8 @@ export function useArcGIS() {
         };
         buildingsRef.current[id] = b;
         renderBuilding(b);
+        selectedBuildingIdRef.current = id;
+        setSelectedBuildingId(id);
         setBuildingsCount(Object.keys(buildingsRef.current).length);
 
         setParams((prev) => {

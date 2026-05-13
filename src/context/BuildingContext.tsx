@@ -66,7 +66,7 @@ export const BuildingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     React.useEffect(() => { roofTypeRef.current = roofType; }, [roofType]);
 
     const [params, setParams] = useState<BuildingParams>({
-        name: "Bldg_1",
+        name: "Building_1",
         lat: 24.711394,
         lng: 46.674347,
         elev: 600,
