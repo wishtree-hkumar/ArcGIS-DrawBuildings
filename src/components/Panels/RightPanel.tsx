@@ -48,8 +48,12 @@ export const RightPanel: React.FC = () => {
 
             <div className="opv-section">
                 <div className="opv-section-title">Map Actions</div>
-                <button className="opv-btn opv-btn-primary" style={{ width: "100%", marginBottom: 6 }} onClick={startPlacement}>+ Place Building on Map</button>
-                <button className="opv-btn opv-btn-primary" style={{ width: "100%", marginBottom: 6 }} onClick={startCustomDraw}>✏ Draw Custom Footprint</button>
+                <button className="opv-btn-action opv-btn-place" onClick={startPlacement}>
+                    <span style={{ fontSize: 15, lineHeight: 1 }}>＋</span> Place Building on Map
+                </button>
+                <button className="opv-btn-action opv-btn-draw" onClick={startCustomDraw}>
+                    <span style={{ fontSize: 14, lineHeight: 1 }}>✏</span> Draw Custom Footprint
+                </button>
                 <div className="opv-btn-row">
                     <button className="opv-btn" onClick={editSelected} disabled={!selectedBuilding}>Move / Rotate</button>
                     <button className="opv-btn" onClick={duplicateSelected} disabled={!selectedBuilding}>Duplicate</button>

@@ -80,11 +80,13 @@ export const LeftPanel: React.FC = () => {
                 </div>
                 <div className="opv-field">
                     <label>Elevation (m ASL)</label>
-                    <div style={{ display: "flex", gap: 4 }}>
-                        {num("elev", 0.1)}
+                    <div style={{ display: "flex", gap: 4, alignItems: "stretch", width: "100%" }}>
+                        <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+                            {num("elev", 0.1)}
+                        </div>
                         <button
                             className="opv-btn"
-                            style={{ flexShrink: 0, padding: "4px 8px", fontSize: 11 }}
+                            style={{ flexShrink: 0, padding: "0 10px", fontSize: 11, lineHeight: 1 }}
                             disabled={disabled}
                             title="Sample ground elevation at current Lat/Lng"
                             onClick={async () => {

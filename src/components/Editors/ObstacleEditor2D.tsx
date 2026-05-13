@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from "react";
 import { useBuildingStore } from "../../context/BuildingContext";
 import { useMapActions } from "../../hooks/useMapActions";
 import { OBSTACLE_PRESETS } from "../../types/building.types";
+import { lngLatToLocalMeters } from "../../utils/geoUtils";
 
 export const ObstacleEditor2D: React.FC = () => {
     const { selectedBuildingId, buildingsRef, customRev, selectedObsIdx, obsSize } = useBuildingStore();
@@ -17,6 +18,59 @@ export const ObstacleEditor2D: React.FC = () => {
     const obsCanvasRef = useRef<HTMLCanvasElement>(null);
     const obsHoverRef = useRef<number | null>(null);
     const obsDragRef = useRef<{ idx: number; offRx: number; offRy: number } | null>(null);
+
+    const custom = selectedBuilding?.custom;
+
+    // Footprint in local meters (relative to the obstacle/render origin).
+    // For rectangle: centered on (0,0). For custom: projected from ringLngLat about centerLat/centerLng.
+    const footprintMeters = (): { pts: { x: number; y: number }[]; minX: number; maxX: number; minY: number; maxY: number } | null => {
+        if (!params) return null;
+        if (custom) {
+            const pts = custom.ringLngLat.map(([lng, lat]) =>
+                lngLatToLocalMeters(lng, lat, custom.centerLat, custom.centerLng)
+            );
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of pts) {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            }
+            return { pts, minX, maxX, minY, maxY };
+        }
+        const hx = params.len / 2;
+        const hy = params.wid / 2;
+        return {
+            pts: [
+                { x: -hx, y: -hy }, { x: hx, y: -hy },
+                { x: hx, y: hy }, { x: -hx, y: hy },
+            ],
+            minX: -hx, maxX: hx, minY: -hy, maxY: hy,
+        };
+    };
+
+    const computeLayout = () => {
+        const canvas = obsCanvasRef.current;
+        if (!canvas || !params) return null;
+        const fp = footprintMeters();
+        if (!fp) return null;
+        const cw = canvas.width;
+        const ch = canvas.height;
+        const padL = 26, padR = 10, padT = 10, padB = 22;
+        const maxW = cw - padL - padR;
+        const maxH = ch - padT - padB;
+        const lenM = Math.max(fp.maxX - fp.minX, 0.01);
+        const widM = Math.max(fp.maxY - fp.minY, 0.01);
+        const scale = Math.min(maxW / lenM, maxH / widM);
+        const dw = lenM * scale;
+        const dh = widM * scale;
+        const ox = padL + (maxW - dw) / 2;
+        const oy = padT + (maxH - dh) / 2;
+        // origin (meters 0,0) in canvas pixels:
+        const cxOrigin = ox - fp.minX * scale;
+        const cyOrigin = oy - fp.minY * scale;
+        return { fp, cw, ch, ox, oy, dw, dh, scale, cxOrigin, cyOrigin, lenM, widM };
+    };
 
     const drawEditor = () => {
         const canvas = obsCanvasRef.current;
@@ -37,32 +91,34 @@ export const ObstacleEditor2D: React.FC = () => {
             return;
         }
 
-        const aspect = params.len / params.wid;
-        const maxW = cw - 20;
-        const maxH = ch - 20;
-        let dw: number, dh: number;
-        if (aspect > maxW / maxH) {
-            dw = maxW;
-            dh = maxW / aspect;
+        const L = computeLayout();
+        if (!L) return;
+        const { fp, ox, oy, dw, dh, scale, cxOrigin, cyOrigin, lenM, widM } = L;
+
+        // Footprint shape
+        ctx.beginPath();
+        if (custom) {
+            fp.pts.forEach((p, i) => {
+                const x = cxOrigin + p.x * scale;
+                const y = cyOrigin + p.y * scale;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
         } else {
-            dh = maxH;
-            dw = dh * aspect;
+            ctx.rect(ox, oy, dw, dh);
         }
-        const ox = (cw - dw) / 2;
-        const oy = (ch - dh) / 2;
-        const scale = dw / params.len;
-
         ctx.fillStyle = "rgba(30,37,53,0.85)";
-        ctx.fillRect(ox, oy, dw, dh);
+        ctx.fill();
 
-        if (roofType === "gabled") {
+        if (!custom && roofType === "gabled") {
             ctx.strokeStyle = "rgba(0,255,157,0.6)";
             ctx.lineWidth = 1.5;
             ctx.beginPath();
             ctx.moveTo(ox, oy + dh / 2);
             ctx.lineTo(ox + dw, oy + dh / 2);
             ctx.stroke();
-        } else if (roofType === "sawtooth") {
+        } else if (!custom && roofType === "sawtooth") {
             ctx.strokeStyle = "rgba(0,212,255,0.25)";
             const sh = dh / params.spans;
             for (let i = 0; i < params.spans; i++) {
@@ -73,14 +129,40 @@ export const ObstacleEditor2D: React.FC = () => {
             }
         }
 
-        ctx.strokeStyle = "rgba(0,212,255,0.5)";
+        // Footprint outline
+        ctx.strokeStyle = "rgba(0,212,255,0.6)";
+        ctx.lineWidth = 1.25;
         ctx.setLineDash([5, 3]);
-        ctx.strokeRect(ox + 0.5, oy + 0.5, dw - 1, dh - 1);
+        ctx.beginPath();
+        if (custom) {
+            fp.pts.forEach((p, i) => {
+                const x = cxOrigin + p.x * scale;
+                const y = cyOrigin + p.y * scale;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+        } else {
+            ctx.rect(ox + 0.5, oy + 0.5, dw - 1, dh - 1);
+        }
+        ctx.stroke();
         ctx.setLineDash([]);
 
+        // Vertex dots for custom
+        if (custom) {
+            ctx.fillStyle = "#00d4ff";
+            fp.pts.forEach((p) => {
+                const x = cxOrigin + p.x * scale;
+                const y = cyOrigin + p.y * scale;
+                ctx.beginPath();
+                ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
         obstacles.forEach((o, idx) => {
-            const cx = ox + dw / 2 + o.rx * scale;
-            const cy = oy + dh / 2 + o.ry * scale;
+            const cx = cxOrigin + o.rx * scale;
+            const cy = cyOrigin + o.ry * scale;
             const ow = o.w * scale;
             const od = o.d * scale;
             const hov = obsHoverRef.current === idx;
@@ -91,30 +173,28 @@ export const ObstacleEditor2D: React.FC = () => {
             ctx.strokeRect((cx - ow / 2) | 0, (cy - od / 2) | 0, ow | 0, od | 0);
         });
 
-        ctx.fillStyle = "rgba(0,212,255,0.6)";
-        ctx.font = "500 10px monospace";
+        ctx.fillStyle = "rgba(0,212,255,0.75)";
+        ctx.font = "600 10px 'JetBrains Mono', monospace";
         ctx.textAlign = "center";
-        ctx.fillText(`${params.len.toFixed(1)}m`, ox + dw / 2, oy + dh + 12);
+        ctx.textBaseline = "top";
+        ctx.fillText(`${lenM.toFixed(1)} m`, ox + dw / 2, oy + dh + 6);
+
+        ctx.save();
+        ctx.translate(ox - 8, oy + dh / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`${widM.toFixed(1)} m`, 0, 0);
+        ctx.restore();
     };
 
     const editorHitTest = (cx: number, cy: number): number | null => {
-        const canvas = obsCanvasRef.current;
-        if (!canvas || !params) return null;
-        const cw = canvas.width;
-        const ch = canvas.height;
-        const aspect = params.len / params.wid;
-        const maxW = cw - 20;
-        const maxH = ch - 20;
-        let dw: number, dh: number;
-        if (aspect > maxW / maxH) { dw = maxW; dh = maxW / aspect; }
-        else { dh = maxH; dw = dh * aspect; }
-        const ox = (cw - dw) / 2;
-        const oy = (ch - dh) / 2;
-        const scale = dw / params.len;
+        const L = computeLayout();
+        if (!L) return null;
+        const { scale, cxOrigin, cyOrigin } = L;
         for (let i = obstacles.length - 1; i >= 0; i--) {
             const o = obstacles[i];
-            const ocx = ox + dw / 2 + o.rx * scale;
-            const ocy = oy + dh / 2 + o.ry * scale;
+            const ocx = cxOrigin + o.rx * scale;
+            const ocy = cyOrigin + o.ry * scale;
             const hw = (o.w * scale) / 2;
             const hd = (o.d * scale) / 2;
             if (cx >= ocx - hw && cx <= ocx + hw && cy >= ocy - hd && cy <= ocy + hd) return i;
@@ -123,25 +203,14 @@ export const ObstacleEditor2D: React.FC = () => {
     };
 
     const editorToMeters = (cx: number, cy: number) => {
-        const canvas = obsCanvasRef.current!;
-        if (!params) return { rx: 0, ry: 0 };
-        const cw = canvas.width;
-        const ch = canvas.height;
-        const aspect = params.len / params.wid;
-        const maxW = cw - 20;
-        const maxH = ch - 20;
-        let dw: number, dh: number;
-        if (aspect > maxW / maxH) { dw = maxW; dh = maxW / aspect; }
-        else { dh = maxH; dw = dh * aspect; }
-        const ox = (cw - dw) / 2;
-        const oy = (ch - dh) / 2;
-        const scale = dw / params.len;
-        return { rx: (cx - ox - dw / 2) / scale, ry: (cy - oy - dh / 2) / scale };
+        const L = computeLayout();
+        if (!L) return { rx: 0, ry: 0 };
+        return { rx: (cx - L.cxOrigin) / L.scale, ry: (cy - L.cyOrigin) / L.scale };
     };
 
     useEffect(() => {
         drawEditor();
-    }, [obstacles, params, roofType, selectedBuildingId]);
+    }, [obstacles, params, roofType, selectedBuildingId, customRev]);
 
     const onEditorMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!params) return;
@@ -160,7 +229,9 @@ export const ObstacleEditor2D: React.FC = () => {
             obsDragRef.current = { idx, offRx: o.rx - rx, offRy: o.ry - ry };
         } else {
             const { rx, ry } = editorToMeters(cx, cy);
-            if (Math.abs(rx) > params.len / 2 || Math.abs(ry) > params.wid / 2) return;
+            const L = computeLayout();
+            if (!L) return;
+            if (rx < L.fp.minX || rx > L.fp.maxX || ry < L.fp.minY || ry > L.fp.maxY) return;
             const preset = OBSTACLE_PRESETS[selectedObsIdx];
             setObstaclesOf((arr) => [...arr, { type: preset.type, color: preset.color, rx, ry, ...obsSize }]);
         }
@@ -174,13 +245,15 @@ export const ObstacleEditor2D: React.FC = () => {
         if (obsDragRef.current) {
             const { idx, offRx, offRy } = obsDragRef.current;
             const { rx, ry } = editorToMeters(cx, cy);
+            const L = computeLayout();
             setObstaclesOf((arr) =>
                 arr.map((o, i) => {
                     if (i !== idx) return o;
+                    if (!L) return { ...o, rx: rx + offRx, ry: ry + offRy };
                     return {
                         ...o,
-                        rx: Math.max(-params.len / 2 + o.w / 2, Math.min(params.len / 2 - o.w / 2, rx + offRx)),
-                        ry: Math.max(-params.wid / 2 + o.d / 2, Math.min(params.wid / 2 - o.d / 2, ry + offRy)),
+                        rx: Math.max(L.fp.minX + o.w / 2, Math.min(L.fp.maxX - o.w / 2, rx + offRx)),
+                        ry: Math.max(L.fp.minY + o.d / 2, Math.min(L.fp.maxY - o.d / 2, ry + offRy)),
                     };
                 })
             );
@@ -194,16 +267,25 @@ export const ObstacleEditor2D: React.FC = () => {
     const onEditorMouseUp = () => { obsDragRef.current = null; };
 
     return (
-        <canvas
-            ref={obsCanvasRef}
-            width={290}
-            height={180}
-            style={{ width: "100%", marginTop: 8, borderRadius: 4, cursor: params ? "crosshair" : "not-allowed", display: "block", opacity: params ? 1 : 0.6 }}
-            onMouseDown={onEditorMouseDown}
-            onMouseMove={onEditorMouseMove}
-            onMouseUp={onEditorMouseUp}
-            onMouseLeave={onEditorMouseUp}
-            onContextMenu={(e) => e.preventDefault()}
-        />
+        <>
+            <canvas
+                ref={obsCanvasRef}
+                width={290}
+                height={180}
+                style={{ width: "100%", marginTop: 8, borderRadius: 4, cursor: params ? "crosshair" : "not-allowed", display: "block", opacity: params ? 1 : 0.6 }}
+                onMouseDown={onEditorMouseDown}
+                onMouseMove={onEditorMouseMove}
+                onMouseUp={onEditorMouseUp}
+                onMouseLeave={onEditorMouseUp}
+                onContextMenu={(e) => e.preventDefault()}
+            />
+            <div style={{
+                marginTop: 6, fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+                color: "#64748b", letterSpacing: ".04em", textAlign: "center",
+                opacity: params ? 1 : 0.5,
+            }}>
+                Click to place · Drag to move · Right-click delete
+            </div>
+        </>
     );
 };

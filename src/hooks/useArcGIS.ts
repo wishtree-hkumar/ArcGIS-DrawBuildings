@@ -21,6 +21,7 @@ export function useArcGIS() {
         pendingCustomRef, setCustomDrawMode,
         roofTypeRef, paramsRef, setParams,
         drawLayerRef, sketchRef, viewRef,
+        basemapId,
     } = useBuildingStore();
 
     const renderBuilding = (b: SavedBuilding) => {
@@ -72,23 +73,40 @@ export function useArcGIS() {
         });
     };
 
+    const buildBasemap = async (id: string): Promise<Basemap> => {
+        if (id === "osm") {
+            const osmLayer = new OpenStreetMapLayer();
+            await osmLayer.load();
+            return new Basemap({
+                baseLayers: [osmLayer],
+                title: "Custom OSM",
+                id: "custom-osm-basemap",
+            });
+        }
+        return Basemap.fromId(id) as Basemap;
+    };
+
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view || !view.map) return;
+        let cancelled = false;
+        buildBasemap(basemapId).then((bm) => {
+            if (cancelled || !view.map) return;
+            view.map.basemap = bm;
+        }).catch((e) => console.warn("Basemap switch failed", e));
+        return () => { cancelled = true; };
+    }, [basemapId]);
+
     useEffect(() => {
         if (!mapRef.current) return;
         let cancelled = false;
 
         const init = async () => {
-            const osmLayer = new OpenStreetMapLayer();
-            await osmLayer.load();
+            const initialBasemap = await buildBasemap(basemapId);
             if (cancelled) return;
 
-            const customBasemap = new Basemap({
-                baseLayers: [osmLayer],
-                title: "Custom OSM",
-                id: "custom-osm-basemap",
-            });
-
             const map = new Map({
-                basemap: customBasemap,
+                basemap: initialBasemap,
                 ground: "world-elevation",
             });
 
