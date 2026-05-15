@@ -26,6 +26,7 @@ export interface BuildingParams {
     wh: number;
     rot: number;
     parapet: number;
+    parapetWidth: number;
     pitch: number;
     spans: number;
 }

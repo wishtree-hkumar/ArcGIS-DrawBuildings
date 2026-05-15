@@ -109,6 +109,7 @@ export const BuildingProvider: React.FC<{ children: React.ReactNode }> = ({
         wh: 6,
         rot: 0,
         parapet: 0.5,
+        parapetWidth: 0,
         pitch: 15,
         spans: 2,
     });
