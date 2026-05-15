@@ -202,6 +202,28 @@ export const ObstacleEditor2D: React.FC = () => {
         return null;
     };
 
+    const pointInPolygon = (x: number, y: number, poly: { x: number; y: number }[]) => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i].x, yi = poly[i].y;
+            const xj = poly[j].x, yj = poly[j].y;
+            const intersect = ((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-12) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    };
+
+    const obstacleFitsInside = (rx: number, ry: number, w: number, d: number, L: NonNullable<ReturnType<typeof computeLayout>>) => {
+        const hw = w / 2, hd = d / 2;
+        if (rx - hw < L.fp.minX || rx + hw > L.fp.maxX || ry - hd < L.fp.minY || ry + hd > L.fp.maxY) return false;
+        if (!custom) return true;
+        const corners = [
+            { x: rx - hw, y: ry - hd }, { x: rx + hw, y: ry - hd },
+            { x: rx + hw, y: ry + hd }, { x: rx - hw, y: ry + hd },
+        ];
+        return corners.every((c) => pointInPolygon(c.x, c.y, L.fp.pts));
+    };
+
     const editorToMeters = (cx: number, cy: number) => {
         const L = computeLayout();
         if (!L) return { rx: 0, ry: 0 };
@@ -212,11 +234,17 @@ export const ObstacleEditor2D: React.FC = () => {
         drawEditor();
     }, [obstacles, params, roofType, selectedBuildingId, customRev]);
 
+    const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
+        const canvas = obsCanvasRef.current!;
+        const rect = canvas.getBoundingClientRect();
+        const sx = canvas.width / rect.width;
+        const sy = canvas.height / rect.height;
+        return { cx: (e.clientX - rect.left) * sx, cy: (e.clientY - rect.top) * sy };
+    };
+
     const onEditorMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!params) return;
-        const rect = obsCanvasRef.current!.getBoundingClientRect();
-        const cx = e.clientX - rect.left;
-        const cy = e.clientY - rect.top;
+        const { cx, cy } = getCanvasCoords(e);
         if (e.button === 2) {
             const i = editorHitTest(cx, cy);
             if (i !== null) setObstaclesOf((o) => o.filter((_, idx) => idx !== i));
@@ -231,7 +259,7 @@ export const ObstacleEditor2D: React.FC = () => {
             const { rx, ry } = editorToMeters(cx, cy);
             const L = computeLayout();
             if (!L) return;
-            if (rx < L.fp.minX || rx > L.fp.maxX || ry < L.fp.minY || ry > L.fp.maxY) return;
+            if (!obstacleFitsInside(rx, ry, obsSize.w, obsSize.d, L)) return;
             const preset = OBSTACLE_PRESETS[selectedObsIdx];
             setObstaclesOf((arr) => [...arr, { type: preset.type, color: preset.color, rx, ry, ...obsSize }]);
         }
@@ -239,9 +267,7 @@ export const ObstacleEditor2D: React.FC = () => {
 
     const onEditorMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (!params) return;
-        const rect = obsCanvasRef.current!.getBoundingClientRect();
-        const cx = e.clientX - rect.left;
-        const cy = e.clientY - rect.top;
+        const { cx, cy } = getCanvasCoords(e);
         if (obsDragRef.current) {
             const { idx, offRx, offRy } = obsDragRef.current;
             const { rx, ry } = editorToMeters(cx, cy);
@@ -250,11 +276,12 @@ export const ObstacleEditor2D: React.FC = () => {
                 arr.map((o, i) => {
                     if (i !== idx) return o;
                     if (!L) return { ...o, rx: rx + offRx, ry: ry + offRy };
-                    return {
-                        ...o,
-                        rx: Math.max(L.fp.minX + o.w / 2, Math.min(L.fp.maxX - o.w / 2, rx + offRx)),
-                        ry: Math.max(L.fp.minY + o.d / 2, Math.min(L.fp.maxY - o.d / 2, ry + offRy)),
-                    };
+                    const clampedRx = Math.max(L.fp.minX + o.w / 2, Math.min(L.fp.maxX - o.w / 2, rx + offRx));
+                    const clampedRy = Math.max(L.fp.minY + o.d / 2, Math.min(L.fp.maxY - o.d / 2, ry + offRy));
+                    if (custom && !obstacleFitsInside(clampedRx, clampedRy, o.w, o.d, L)) {
+                        return o;
+                    }
+                    return { ...o, rx: clampedRx, ry: clampedRy };
                 })
             );
             return;

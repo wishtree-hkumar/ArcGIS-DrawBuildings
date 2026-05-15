@@ -22,6 +22,7 @@ export function useArcGIS() {
         roofTypeRef, paramsRef, setParams,
         drawLayerRef, sketchRef, viewRef,
         basemapId,
+        setCustomRev,
     } = useBuildingStore();
 
     const renderBuilding = (b: SavedBuilding) => {
@@ -130,7 +131,7 @@ export function useArcGIS() {
             const sketchViewModel = new SketchViewModel({
                 view,
                 layer: drawLayer,
-                defaultUpdateOptions: { enableZ: true, tool: "transform", toggleToolOnClick: false, multipleSelectionEnabled: true },
+                defaultUpdateOptions: { enableZ: false, tool: "transform", toggleToolOnClick: false, multipleSelectionEnabled: true, enableRotation: false, enableScaling: false },
             } as any);
             sketchRef.current = sketchViewModel;
 
@@ -157,7 +158,7 @@ export function useArcGIS() {
                 setSelectedBuildingId(bid);
                 
                 const groupGraphics = drawLayer.graphics.toArray().filter((gr) => (gr.attributes as any)?.buildingId === bid);
-                sketchViewModel.update(groupGraphics, { tool: "transform", enableRotation: true, enableScaling: false, multipleSelectionEnabled: true } as any);
+                sketchViewModel.update(groupGraphics, { tool: "transform", enableRotation: false, enableScaling: false, enableZ: false, multipleSelectionEnabled: true } as any);
             });
 
             const createHandle = sketchViewModel.on("create", async (event: any) => {
@@ -217,19 +218,94 @@ export function useArcGIS() {
                 });
             });
 
-            const updateHandle = sketchViewModel.on("update", (event: any) => {
-                if (event.state === "complete" || event.state === "cancel") {
-                    const bid = selectedBuildingIdRef.current;
-                    if (!bid) return;
-                    const b = buildingsRef.current[bid];
-                    if (!b) return;
-                    const moved = event.graphics?.[0];
-                    const ext = moved?.geometry?.extent;
-                    if (ext) {
-                        b.params.lat = ext.center.latitude;
-                        b.params.lng = ext.center.longitude;
+            let moveStartCenter: { lat: number; lng: number } | null = null;
+
+            const groupCenter = (graphics: Graphic[]): { lat: number; lng: number } | null => {
+                let union: any = null;
+                for (const g of graphics) {
+                    const e: any = (g.geometry as any)?.extent;
+                    if (!e) continue;
+                    union = union ? union.union(e) : e.clone();
+                }
+                if (!union?.center) return null;
+                return { lat: union.center.latitude, lng: union.center.longitude };
+            };
+
+            const updateHandle = sketchViewModel.on("update", async (event: any) => {
+                if (event.state === "start") {
+                    moveStartCenter = groupCenter(event.graphics ?? []);
+                    return;
+                }
+                if (event.state !== "complete") return;
+                if (event.aborted) { moveStartCenter = null; return; }
+
+                const bid = selectedBuildingIdRef.current;
+                if (!bid) { moveStartCenter = null; return; }
+                const b = buildingsRef.current[bid];
+                if (!b || !moveStartCenter) { moveStartCenter = null; return; }
+
+                const endCenter = groupCenter(event.graphics ?? []);
+                if (!endCenter) { moveStartCenter = null; return; }
+
+                const dLat = endCenter.lat - moveStartCenter.lat;
+                const dLng = endCenter.lng - moveStartCenter.lng;
+                moveStartCenter = null;
+                if (dLat === 0 && dLng === 0) return;
+
+                const newLat = b.params.lat + dLat;
+                const newLng = b.params.lng + dLng;
+
+                let newElev = b.params.elev;
+                try {
+                    const Point = (await import("@arcgis/core/geometry/Point")).default;
+                    const pt = new Point({
+                        latitude: newLat,
+                        longitude: newLng,
+                        spatialReference: { wkid: 4326 } as any,
+                    });
+                    const r = await view.map!.ground.queryElevation(pt);
+                    const z = (r.geometry as any)?.z;
+                    if (typeof z === "number" && !Number.isNaN(z)) newElev = z;
+                } catch (e) {
+                    console.warn("Move elevation resample failed", e);
+                }
+
+                const deltaZ = newElev - b.params.elev;
+
+                b.params.lat = newLat;
+                b.params.lng = newLng;
+                b.params.elev = newElev;
+
+                if (b.custom) {
+                    b.custom.ringLngLat = b.custom.ringLngLat.map(
+                        ([lng, lat]) => [lng + dLng, lat + dLat] as [number, number]
+                    );
+                    b.custom.centerLat = newLat;
+                    b.custom.centerLng = newLng;
+                    b.custom.baseZ = newElev;
+                }
+
+                if (deltaZ !== 0) {
+                    const buildingGraphics = drawLayer.graphics
+                        .toArray()
+                        .filter((g) => (g.attributes as any)?.buildingId === bid);
+                    for (const g of buildingGraphics) {
+                        const poly: any = g.geometry;
+                        if (!poly?.clone || !poly.rings) continue;
+                        const cloned = poly.clone();
+                        cloned.rings = cloned.rings.map((ring: number[][]) =>
+                            ring.map((pt) => {
+                                const x = pt[0];
+                                const y = pt[1];
+                                const z = pt[2] ?? 0;
+                                return [x, y, z + deltaZ];
+                            })
+                        );
+                        g.geometry = cloned;
                     }
                 }
+
+                setCustomRev((v) => v + 1);
             });
 
             view.ui.components = [];
