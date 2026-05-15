@@ -102,8 +102,9 @@ export const RightPanel: React.FC = () => {
                     <button
                         className="opv-btn opv-btn-accent"
                         onClick={exportAll}
+                        title="Export all buildings as GeoJSON (.geojson)"
                     >
-                        Export All
+                        Export Buildings (GeoJSON)
                     </button>
                 </div>
             </div>

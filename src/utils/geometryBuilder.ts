@@ -245,15 +245,82 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
         rings: [roofRing],
     });
 
-    if (parapet > 0 && b.roofType !== "monopitch") {
+    if (parapet > 0) {
+        const parapetWidth = Math.max(0, b.params.parapetWidth || 0);
+        const mPerDegLatP = R_EARTH * (Math.PI / 180);
+        const mPerDegLngP = R_EARTH * Math.cos((c.centerLat * Math.PI) / 180) * (Math.PI / 180);
+        const localRing = ring.map((v) => lngLatToLocalMeters(v[0], v[1], c.centerLat, c.centerLng));
+        const nR = localRing.length;
+        let cross = 0;
+        for (let i = 0; i < nR; i++) {
+            const a = localRing[i];
+            const bb = localRing[(i + 1) % nR];
+            cross += a.x * bb.y - bb.x * a.y;
+        }
+        const ccw = cross > 0;
+        const innerLocal: { x: number; y: number }[] = [];
+        if (parapetWidth > 0) {
+            for (let i = 0; i < nR; i++) {
+                const prev = localRing[(i - 1 + nR) % nR];
+                const curr = localRing[i];
+                const next = localRing[(i + 1) % nR];
+                const d1x = curr.x - prev.x, d1y = curr.y - prev.y;
+                const d2x = next.x - curr.x, d2y = next.y - curr.y;
+                const l1 = Math.hypot(d1x, d1y) || 1;
+                const l2 = Math.hypot(d2x, d2y) || 1;
+                const u1x = d1x / l1, u1y = d1y / l1;
+                const u2x = d2x / l2, u2y = d2y / l2;
+                const n1x = ccw ? -u1y : u1y;
+                const n1y = ccw ? u1x : -u1x;
+                const n2x = ccw ? -u2y : u2y;
+                const n2y = ccw ? u2x : -u2x;
+                const p1x = prev.x + parapetWidth * n1x;
+                const p1y = prev.y + parapetWidth * n1y;
+                const p2x = curr.x + parapetWidth * n2x;
+                const p2y = curr.y + parapetWidth * n2y;
+                const det = u1x * -u2y - (-u2x) * u1y;
+                let px: number, py: number;
+                if (Math.abs(det) < 1e-9) {
+                    px = p2x; py = p2y;
+                } else {
+                    const t = ((p2x - p1x) * -u2y - (p2y - p1y) * -u2x) / det;
+                    px = p1x + t * u1x;
+                    py = p1y + t * u1y;
+                }
+                innerLocal.push({ x: px, y: py });
+            }
+        }
+        const innerLngLat: [number, number][] = innerLocal.map(({ x, y }) => [
+            c.centerLng + x / mPerDegLngP,
+            c.centerLat + y / mPerDegLatP,
+        ]);
         for (let i = 0; i < closed.length - 1; i++) {
             const [x1, y1] = closed[i];
             const [x2, y2] = closed[i + 1];
+            const t1 = topZ(x1, y1);
+            const t2 = topZ(x2, y2);
             out.push({
                 desc: "Parapet",
                 color: parapetColor,
-                rings: [[[x1, y1, baseZ + wh], [x2, y2, baseZ + wh], [x2, y2, baseZ + wh + parapet], [x1, y1, baseZ + wh + parapet], [x1, y1, baseZ + wh]]],
+                rings: [[[x1, y1, t1], [x2, y2, t2], [x2, y2, t2 + parapet], [x1, y1, t1 + parapet], [x1, y1, t1]]],
             });
+            if (parapetWidth > 0) {
+                const i2 = (i + 1) % nR;
+                const [ix1, iy1] = innerLngLat[i];
+                const [ix2, iy2] = innerLngLat[i2];
+                const it1 = topZ(ix1, iy1);
+                const it2 = topZ(ix2, iy2);
+                out.push({
+                    desc: "ParapetInner",
+                    color: parapetColor,
+                    rings: [[[ix1, iy1, it1], [ix2, iy2, it2], [ix2, iy2, it2 + parapet], [ix1, iy1, it1 + parapet], [ix1, iy1, it1]]],
+                });
+                out.push({
+                    desc: "ParapetTop",
+                    color: parapetColor,
+                    rings: [[[x1, y1, t1 + parapet], [x2, y2, t2 + parapet], [ix2, iy2, it2 + parapet], [ix1, iy1, it1 + parapet], [x1, y1, t1 + parapet]]],
+                });
+            }
         }
     }
 

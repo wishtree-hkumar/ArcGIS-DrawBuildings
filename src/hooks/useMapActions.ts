@@ -84,10 +84,15 @@ export function useMapActions() {
             const layer = drawLayerRef.current!;
             const gs = layer.graphics.toArray().filter((gr) => (gr.attributes as any)?.buildingId === b.id);
             for (const g of gs) {
+                const geom: any = g.geometry?.toJSON();
+                if (!geom || !geom.rings) continue;
+                const coordinates = geom.rings.map((ring: number[][]) =>
+                    ring.map((pt) => (pt.length >= 3 ? [pt[0], pt[1], pt[2]] : [pt[0], pt[1]]))
+                );
                 features.push({
                     type: "Feature",
                     properties: { OBJECTID: oid++, Building: b.params.name, Description: g.attributes?.description },
-                    geometry: g.geometry?.toJSON(),
+                    geometry: { type: "Polygon", coordinates },
                 });
             }
         }

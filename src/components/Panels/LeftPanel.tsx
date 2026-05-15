@@ -198,20 +198,31 @@ export const LeftPanel: React.FC = () => {
                         <input className="opv-input" type="number" step={0.1} disabled={dimDisabled} value={p?.wid ?? ""} onChange={(e) => setParam("wid", parseFloat(e.target.value) || 0)} />
                     </div>
                 </div>
-                <div className="opv-row3">
+                <div className="opv-row2">
                     <div className="opv-field">
                         <label>Wall H (m)</label>
                         <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.wh ?? ""} onChange={(e) => setParam("wh", parseFloat(e.target.value) || 0)} />
-                    </div>
-                    <div className="opv-field">
-                        <label>Parapet (m)</label>
-                        <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.parapet ?? ""} onChange={(e) => setParam("parapet", parseFloat(e.target.value) || 0)} />
                     </div>
                     <div className="opv-field">
                         <label>Pitch (%)</label>
                         <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.pitch ?? ""} onChange={(e) => setParam("pitch", parseFloat(e.target.value) || 0)} />
                     </div>
                 </div>
+                {(isCustom || roofType === "flat") && (
+                    <div className="opv-field">
+                        <label>Parapet</label>
+                        <div style={{ display: "flex", gap: 6 }}>
+                            <div className="opv-field" style={{ flex: 1, marginBottom: 0 }}>
+                                <label style={{ fontSize: 10, color: "#9ca3af" }}>Height (m)</label>
+                                <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.parapet ?? ""} onChange={(e) => setParam("parapet", parseFloat(e.target.value) || 0)} />
+                            </div>
+                            <div className="opv-field" style={{ flex: 1, marginBottom: 0 }}>
+                                <label style={{ fontSize: 10, color: "#9ca3af" }}>Width (m)</label>
+                                <input className="opv-input" type="number" step={0.05} min={0} disabled={disabled || !isCustom} value={p?.parapetWidth ?? 0} onChange={(e) => setParam("parapetWidth", Math.max(0, parseFloat(e.target.value) || 0))} />
+                            </div>
+                        </div>
+                    </div>
+                )}
                 <div className="opv-field">
                     <label>Rotation (°) <span className="opv-rot-value">{Math.round(Math.min(360, Math.max(0, p?.rot ?? 0)))}°</span></label>
                     <input
