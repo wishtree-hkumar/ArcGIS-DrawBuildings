@@ -39,7 +39,7 @@ export function useMapActions() {
         const layer = drawLayerRef.current;
         if (!bid || !layer || !sketchRef.current) return;
         const groupGraphics = layer.graphics.toArray().filter((gr) => (gr.attributes as any)?.buildingId === bid);
-        sketchRef.current.update(groupGraphics, { tool: "transform", enableRotation: true, enableScaling: false, multipleSelectionEnabled: true } as any);
+        sketchRef.current.update(groupGraphics, { tool: "transform", enableRotation: false, enableScaling: false, enableZ: false, multipleSelectionEnabled: true } as any);
     };
 
     const deleteSelected = () => {

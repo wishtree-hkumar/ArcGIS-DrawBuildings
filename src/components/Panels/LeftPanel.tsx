@@ -3,6 +3,7 @@ import { useBuildingStore } from "../../context/BuildingContext";
 import { useMapActions } from "../../hooks/useMapActions";
 import { OBSTACLE_PRESETS, RoofType, BuildingParams } from "../../types/building.types";
 import { ObstacleEditor2D } from "../Editors/ObstacleEditor2D";
+import { edgeMeters, rotateLngLatAround } from "../../utils/geoUtils";
 
 export const LeftPanel: React.FC = () => {
     const {
@@ -10,9 +11,69 @@ export const LeftPanel: React.FC = () => {
         selectedBuildingId, buildingsRef, customRev,
         selectedObsIdx, setSelectedObsIdx,
         obsSize, setObsSize,
+        drawLayerRef,
     } = useBuildingStore();
 
-    const { setParam, setRoofTypeOf, setObstaclesOf } = useMapActions();
+    const [highlightEdge, setHighlightEdge] = React.useState<number | null>(null);
+
+    React.useEffect(() => {
+        const layer = drawLayerRef.current;
+        if (!layer) return;
+        const prev = layer.graphics.toArray().filter((g) => (g.attributes as any)?.edgeHighlight);
+        layer.removeMany(prev);
+        if (highlightEdge == null) return;
+        const b = selectedBuildingId ? buildingsRef.current[selectedBuildingId] : null;
+        if (!b?.custom) return;
+
+        const c = b.custom;
+        const rot = b.params.rot || 0;
+        const scale = c.scale ?? 1;
+        const transform = (lng: number, lat: number): [number, number] => {
+            const sx = c.centerLng + (lng - c.centerLng) * scale;
+            const sy = c.centerLat + (lat - c.centerLat) * scale;
+            return rot ? rotateLngLatAround(sx, sy, c.centerLat, c.centerLng, rot) : [sx, sy];
+        };
+
+        const ring = c.ringLngLat;
+        const a = ring[highlightEdge];
+        const next = ring[(highlightEdge + 1) % ring.length];
+        if (!a || !next) return;
+        const [ax, ay] = transform(a[0], a[1]);
+        const [bx, by] = transform(next[0], next[1]);
+        const z = c.baseZ + b.params.wh + (b.params.parapet || 0) + 0.1;
+
+        let cancelled = false;
+        (async () => {
+            const [{ default: Polyline }, { default: Graphic }] = await Promise.all([
+                import("@arcgis/core/geometry/Polyline"),
+                import("@arcgis/core/Graphic"),
+            ]);
+            if (cancelled) return;
+            const line = new Polyline({
+                paths: [[[ax, ay, z], [bx, by, z]]],
+                spatialReference: { wkid: 4326 } as any,
+                hasZ: true,
+            } as any);
+            const g = new Graphic({
+                geometry: line,
+                symbol: {
+                    type: "line-3d",
+                    symbolLayers: [
+                        { type: "line", size: 6, material: { color: [0, 212, 255, 1] } },
+                    ],
+                } as any,
+                attributes: { edgeHighlight: true, buildingId: b.id },
+            });
+            layer.add(g);
+        })();
+        return () => {
+            cancelled = true;
+            const stale = layer.graphics.toArray().filter((g) => (g.attributes as any)?.edgeHighlight);
+            layer.removeMany(stale);
+        };
+    }, [highlightEdge, selectedBuildingId, customRev, drawLayerRef, buildingsRef]);
+
+    const { setParam, setRoofTypeOf, setObstaclesOf, mutateBuilding, setCustomEdgeLength } = useMapActions();
 
     void customRev;
 
@@ -43,6 +104,10 @@ export const LeftPanel: React.FC = () => {
 
     const removeObstacle = (i: number) => {
         setObstaclesOf((o) => o.filter((_, idx) => idx !== i));
+    };
+
+    const updateObstacleDim = (i: number, key: "w" | "d" | "h", value: number) => {
+        setObstaclesOf((arr) => arr.map((o, idx) => (idx === i ? { ...o, [key]: value } : o)));
     };
 
     const dimDisabled = disabled || isCustom;
@@ -80,13 +145,15 @@ export const LeftPanel: React.FC = () => {
                 </div>
                 <div className="opv-field">
                     <label>Elevation (m ASL)</label>
-                    <div style={{ display: "flex", gap: 4 }}>
-                        {num("elev", 0.1)}
+                    <div style={{ display: "flex", gap: 4, alignItems: "stretch", width: "100%" }}>
+                        <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+                            {num("elev", 0.1)}
+                        </div>
                         <button
                             className="opv-btn"
-                            style={{ flexShrink: 0, padding: "4px 8px", fontSize: 11 }}
+                            style={{ flexShrink: 0, padding: "0 10px", fontSize: 11, lineHeight: 1 }}
                             disabled={disabled}
-                            title="Sample ground elevation at current Lat/Lng"
+                            title="Sync Elevation"
                             onClick={async () => {
                                 const view = viewRef.current;
                                 if (!view?.map?.ground || !p) return;
@@ -99,7 +166,11 @@ export const LeftPanel: React.FC = () => {
                                     });
                                     const r = await view.map.ground.queryElevation(pt);
                                     const z = (r.geometry as any)?.z;
-                                    if (typeof z === "number") setParam("elev", z);
+                                    if (typeof z !== "number" || Number.isNaN(z)) return;
+                                    mutateBuilding((b) => {
+                                        b.params.elev = z;
+                                        if (b.custom) b.custom.baseZ = z;
+                                    });
                                 } catch (e) {
                                     console.warn(e);
                                 }
@@ -127,17 +198,11 @@ export const LeftPanel: React.FC = () => {
                         <input className="opv-input" type="number" step={0.1} disabled={dimDisabled} value={p?.wid ?? ""} onChange={(e) => setParam("wid", parseFloat(e.target.value) || 0)} />
                     </div>
                 </div>
-                <div className="opv-row2">
+                <div className="opv-row3">
                     <div className="opv-field">
                         <label>Wall H (m)</label>
                         <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.wh ?? ""} onChange={(e) => setParam("wh", parseFloat(e.target.value) || 0)} />
                     </div>
-                    <div className="opv-field">
-                        <label>Rotation (°)</label>
-                        <input className="opv-input" type="number" step={1} disabled={dimDisabled} value={p?.rot ?? ""} onChange={(e) => setParam("rot", parseFloat(e.target.value) || 0)} />
-                    </div>
-                </div>
-                <div className="opv-row2">
                     <div className="opv-field">
                         <label>Parapet (m)</label>
                         <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.parapet ?? ""} onChange={(e) => setParam("parapet", parseFloat(e.target.value) || 0)} />
@@ -147,6 +212,95 @@ export const LeftPanel: React.FC = () => {
                         <input className="opv-input" type="number" step={0.1} disabled={disabled} value={p?.pitch ?? ""} onChange={(e) => setParam("pitch", parseFloat(e.target.value) || 0)} />
                     </div>
                 </div>
+                <div className="opv-field">
+                    <label>Rotation (°) <span className="opv-rot-value">{Math.round(Math.min(360, Math.max(0, p?.rot ?? 0)))}°</span></label>
+                    <input
+                        className="opv-range"
+                        type="range"
+                        min={0}
+                        max={360}
+                        step={1}
+                        disabled={disabled}
+                        value={Math.min(360, Math.max(0, p?.rot ?? 0))}
+                        onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            const clamped = Math.min(360, Math.max(0, isNaN(v) ? 0 : v));
+                            setParam("rot", clamped);
+                        }}
+                    />
+                </div>
+                {isCustom && (
+                    <div className="opv-field">
+                        <label>Scale (×) <span className="opv-rot-value">{(selectedBuilding?.custom?.scale ?? 1).toFixed(2)}×</span></label>
+                        <input
+                            className="opv-range"
+                            type="range"
+                            min={0.1}
+                            max={5}
+                            step={0.01}
+                            disabled={disabled}
+                            value={selectedBuilding?.custom?.scale ?? 1}
+                            onChange={(e) => {
+                                const v = parseFloat(e.target.value);
+                                const clamped = Math.min(5, Math.max(0.1, isNaN(v) ? 1 : v));
+                                mutateBuilding((b) => {
+                                    if (b.custom) b.custom.scale = clamped;
+                                });
+                            }}
+                        />
+                    </div>
+                )}
+                {isCustom && selectedBuilding?.custom && (() => {
+                    const ring = selectedBuilding.custom.ringLngLat;
+                    const scale = selectedBuilding.custom.scale ?? 1;
+                    return (
+                        <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>
+                                Side Lengths (m)
+                            </div>
+                            <div style={{ maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                                {ring.map((a, i) => {
+                                    const b = ring[(i + 1) % ring.length];
+                                    const len = edgeMeters(a, b) * scale;
+                                    const active = highlightEdge === i;
+                                    return (
+                                        <div
+                                            key={i}
+                                            className="opv-field"
+                                            style={{
+                                                flexDirection: "row",
+                                                alignItems: "center",
+                                                gap: 6,
+                                                padding: 2,
+                                                borderRadius: 3,
+                                                background: active ? "rgba(0,212,255,0.12)" : undefined,
+                                            }}
+                                            onMouseEnter={() => setHighlightEdge(i)}
+                                            onMouseLeave={() => setHighlightEdge((cur) => (cur === i ? null : cur))}
+                                        >
+                                            <label style={{ minWidth: 44, fontSize: 10 }}>Side {i + 1}</label>
+                                            <input
+                                                className="opv-input"
+                                                type="number"
+                                                step={0.1}
+                                                min={0.5}
+                                                disabled={disabled}
+                                                value={Math.round(len * 100) / 100}
+                                                onFocus={() => setHighlightEdge(i)}
+                                                onBlur={() => setHighlightEdge((cur) => (cur === i ? null : cur))}
+                                                onChange={(e) => {
+                                                    const v = parseFloat(e.target.value);
+                                                    if (isNaN(v) || v <= 0) return;
+                                                    setCustomEdgeLength(i, v / (scale || 1));
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    );
+                })()}
             </div>
 
             <hr className="opv-divider" />
@@ -220,11 +374,44 @@ export const LeftPanel: React.FC = () => {
                 {obstacles.length > 0 && (
                     <div style={{ marginTop: 8 }}>
                         {obstacles.map((o, i) => (
-                            <div key={i} className="obs-list-item">
-                                <div className="obs-dot" style={{ background: o.color }} />
-                                <span style={{ flex: 1 }}>{o.type}</span>
-                                <span style={{ fontFamily: "monospace", fontSize: 9, color: "#64748b" }}>{o.w}×{o.d}m</span>
-                                <button onClick={() => removeObstacle(i)}>×</button>
+                            <div key={i} style={{ marginBottom: 6, padding: 6, border: "1px solid rgba(100,116,139,0.2)", borderRadius: 4 }}>
+                                <div className="obs-list-item" style={{ marginBottom: 4 }}>
+                                    <div className="obs-dot" style={{ background: o.color }} />
+                                    <span style={{ flex: 1 }}>{o.type}</span>
+                                    <button onClick={() => removeObstacle(i)}>×</button>
+                                </div>
+                                <div className="opv-row3">
+                                    <div className="opv-field">
+                                        <label>W (m)</label>
+                                        <input
+                                            className="opv-input"
+                                            type="number"
+                                            step={0.1}
+                                            value={o.w}
+                                            onChange={(e) => updateObstacleDim(i, "w", parseFloat(e.target.value) || 0)}
+                                        />
+                                    </div>
+                                    <div className="opv-field">
+                                        <label>D (m)</label>
+                                        <input
+                                            className="opv-input"
+                                            type="number"
+                                            step={0.1}
+                                            value={o.d}
+                                            onChange={(e) => updateObstacleDim(i, "d", parseFloat(e.target.value) || 0)}
+                                        />
+                                    </div>
+                                    <div className="opv-field">
+                                        <label>H (m)</label>
+                                        <input
+                                            className="opv-input"
+                                            type="number"
+                                            step={0.1}
+                                            value={o.h}
+                                            onChange={(e) => updateObstacleDim(i, "h", parseFloat(e.target.value) || 0)}
+                                        />
+                                    </div>
+                                </div>
                             </div>
                         ))}
                     </div>

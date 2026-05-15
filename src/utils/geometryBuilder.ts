@@ -11,6 +11,7 @@ import {
     toCoord,
     closeRing,
     lngLatToLocalMeters,
+    rotateLngLatAround,
     R_EARTH,
 } from "./geoUtils";
 
@@ -124,23 +125,43 @@ export function buildFaces(
         });
     }
 
-    for (const o of obs) {
-        let bz = wh;
-        if (rt === "gabled") bz = wh + (1 - Math.abs(o.ry) / hw) * pitchH;
-        else if (rt === "monopitch") bz = wh + ((o.ry + hw) / p.wid) * pitchH;
-        else if (rt === "sawtooth") {
+    const roofZAt = (ry: number): number => {
+        if (rt === "gabled") return wh + (1 - Math.min(Math.abs(ry) / hw, 1)) * pitchH;
+        if (rt === "monopitch") return wh + Math.max(0, Math.min(1, (ry + hw) / p.wid)) * pitchH;
+        if (rt === "sawtooth") {
             const spanW = p.wid / p.spans;
-            const si = Math.floor((o.ry + hw) / spanW);
-            const t = ((o.ry + hw) % spanW) / spanW;
-            bz = wh + Math.min(si, p.spans - 1) * spanW * (p.pitch / 100) + t * spanW * (p.pitch / 100);
-        } else if (rt === "barrel") {
-            const t = (o.ry + hw) / p.wid;
-            bz = wh + Math.sin(t * Math.PI) * pitchH;
-        } else if (rt === "hipped") {
-            bz = wh + (1 - Math.abs(o.ry) / hw) * pitchH;
+            const rel = Math.max(0, Math.min(p.wid - 1e-6, ry + hw));
+            const si = Math.min(Math.floor(rel / spanW), p.spans - 1);
+            const t = (rel - si * spanW) / spanW;
+            return wh + t * spanW * (p.pitch / 100);
         }
+        if (rt === "barrel") {
+            const t = Math.max(0, Math.min(1, (ry + hw) / p.wid));
+            return wh + Math.sin(t * Math.PI) * pitchH;
+        }
+        if (rt === "hipped") return wh + (1 - Math.min(Math.abs(ry) / hw, 1)) * pitchH;
+        return wh;
+    };
+
+    for (const o of obs) {
         const sw2 = o.w / 2;
         const sd2 = o.d / 2;
+        // Snap obstacle base to the lowest roof point under its footprint so
+        // sloped/curved roofs don't show a gap beneath the box. Sample edges
+        // (and a few interior y's for curved roofs) since extrema may be interior.
+        const ySamples = [o.ry - sd2, o.ry, o.ry + sd2];
+        if (rt === "barrel" || rt === "sawtooth") {
+            const steps = 6;
+            for (let i = 1; i < steps; i++) {
+                ySamples.push(o.ry - sd2 + (i / steps) * o.d);
+            }
+        }
+        let bz = Infinity;
+        for (const ys of ySamples) {
+            const z = roofZAt(ys);
+            if (z < bz) bz = z;
+        }
+        if (!isFinite(bz)) bz = wh;
         const ox = o.rx;
         const oy = o.ry;
         const oz = bz;
@@ -166,7 +187,20 @@ export function buildFaces(
 
 export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
     const c = b.custom!;
-    const ring = c.ringLngLat;
+    const rot = b.params.rot || 0;
+    const scale = c.scale ?? 1;
+    const scaled: [number, number][] = scale === 1
+        ? c.ringLngLat
+        : c.ringLngLat.map(([lng, lat]) => [
+              c.centerLng + (lng - c.centerLng) * scale,
+              c.centerLat + (lat - c.centerLat) * scale,
+          ] as [number, number]);
+    const ring: [number, number][] = rot
+        ? scaled.map(
+              ([lng, lat]) =>
+                  rotateLngLatAround(lng, lat, c.centerLat, c.centerLng, rot) as [number, number],
+          )
+        : scaled;
     const wh = b.params.wh;
     const parapet = b.params.parapet;
     const baseZ = c.baseZ;
@@ -223,13 +257,36 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
         }
     }
 
+    const rotRad = (rot * Math.PI) / 180;
+    const cosR = Math.cos(rotRad);
+    const sinR = Math.sin(rotRad);
+    const mPerDegLat = R_EARTH * (Math.PI / 180);
+    const mPerDegLng = R_EARTH * Math.cos((c.centerLat * Math.PI) / 180) * (Math.PI / 180);
+    const localToLngLat = (mx: number, my: number): [number, number] => [
+        c.centerLng + mx / mPerDegLng,
+        c.centerLat + my / mPerDegLat,
+    ];
+    const rotateLocal = (x: number, y: number): [number, number] => [
+        x * cosR - y * sinR,
+        x * sinR + y * cosR,
+    ];
+
     for (const o of b.obstacles) {
-        const lat = c.centerLat + (o.ry / R_EARTH) * (180 / Math.PI);
-        const lng = c.centerLng + (o.rx / (R_EARTH * Math.cos((c.centerLat * Math.PI) / 180))) * (180 / Math.PI);
-        const bz = topZ(lng, lat);
-        const dLat = (o.d / 2 / R_EARTH) * (180 / Math.PI);
-        const dLng = (o.w / 2 / (R_EARTH * Math.cos((c.centerLat * Math.PI) / 180))) * (180 / Math.PI);
-        const x1 = lng - dLng, x2 = lng + dLng, y1 = lat - dLat, y2 = lat + dLat;
+        const cx = o.rx * scale;
+        const cy = o.ry * scale;
+        const sw2 = o.w / 2;
+        const sd2 = o.d / 2;
+        const corners: [number, number][] = [
+            [cx - sw2, cy - sd2],
+            [cx + sw2, cy - sd2],
+            [cx + sw2, cy + sd2],
+            [cx - sw2, cy + sd2],
+        ].map(([x, y]) => rotateLocal(x, y)) as [number, number][];
+        const world = corners.map(([mx, my]) => localToLngLat(mx, my));
+        const [rcx, rcy] = rotateLocal(cx, cy);
+        const [centerLng, centerLat] = localToLngLat(rcx, rcy);
+        const bz = topZ(centerLng, centerLat);
+        const [c0, c1, c2, c3] = world;
         const hx = parseInt(o.color.slice(1, 3), 16);
         const hy = parseInt(o.color.slice(3, 5), 16);
         const hz = parseInt(o.color.slice(5, 7), 16);
@@ -238,11 +295,11 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
             desc: `Obstacle_${o.type}`,
             color: col,
             rings: [
-                [[x1, y1, bz], [x2, y1, bz], [x2, y1, bz + o.h], [x1, y1, bz + o.h], [x1, y1, bz]],
-                [[x1, y2, bz], [x2, y2, bz], [x2, y2, bz + o.h], [x1, y2, bz + o.h], [x1, y2, bz]],
-                [[x1, y1, bz], [x1, y2, bz], [x1, y2, bz + o.h], [x1, y1, bz + o.h], [x1, y1, bz]],
-                [[x2, y1, bz], [x2, y2, bz], [x2, y2, bz + o.h], [x2, y1, bz + o.h], [x2, y1, bz]],
-                [[x1, y1, bz + o.h], [x2, y1, bz + o.h], [x2, y2, bz + o.h], [x1, y2, bz + o.h], [x1, y1, bz + o.h]],
+                [[c0[0], c0[1], bz], [c1[0], c1[1], bz], [c1[0], c1[1], bz + o.h], [c0[0], c0[1], bz + o.h], [c0[0], c0[1], bz]],
+                [[c3[0], c3[1], bz], [c2[0], c2[1], bz], [c2[0], c2[1], bz + o.h], [c3[0], c3[1], bz + o.h], [c3[0], c3[1], bz]],
+                [[c0[0], c0[1], bz], [c3[0], c3[1], bz], [c3[0], c3[1], bz + o.h], [c0[0], c0[1], bz + o.h], [c0[0], c0[1], bz]],
+                [[c1[0], c1[1], bz], [c2[0], c2[1], bz], [c2[0], c2[1], bz + o.h], [c1[0], c1[1], bz + o.h], [c1[0], c1[1], bz]],
+                [[c0[0], c0[1], bz + o.h], [c1[0], c1[1], bz + o.h], [c2[0], c2[1], bz + o.h], [c3[0], c3[1], bz + o.h], [c0[0], c0[1], bz + o.h]],
             ],
             extras: { obstacleType: o.type },
         });
