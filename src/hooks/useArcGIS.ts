@@ -9,8 +9,8 @@ import Graphic from "@arcgis/core/Graphic";
 import Polygon from "@arcgis/core/geometry/Polygon";
 import { useBuildingStore } from "../context/BuildingContext";
 import { makeBuildingGraphics } from "../utils/geometryBuilder";
-import { SavedBuilding } from "../types/building.types";
-import { toLat, toLng } from "../utils/geoUtils";
+import { SavedBuilding, BuildingVolume } from "../types/building.types";
+import { lngLatToLocalMeters } from "../utils/geoUtils";
 
 export function useArcGIS() {
     const mapRef = useRef<HTMLDivElement>(null);
@@ -19,6 +19,8 @@ export function useArcGIS() {
         selectedBuildingIdRef, setSelectedBuildingId,
         placementModeRef, setPlacementMode,
         pendingCustomRef, setCustomDrawMode,
+        pendingVolumeRef, setVolumeDrawMode,
+        editingTargetRef, editLayerRef,
         roofTypeRef, paramsRef, setParams,
         drawLayerRef, sketchRef, viewRef,
         basemapId,
@@ -30,7 +32,10 @@ export function useArcGIS() {
         if (!layer) return;
         const old = layer.graphics
             .toArray()
-            .filter((g) => (g.attributes as any)?.buildingId === b.id);
+            .filter((g) => {
+                const a = g.attributes as any;
+                return a?.buildingId === b.id && !a?.editHandle;
+            });
         layer.removeMany(old);
         layer.addMany(makeBuildingGraphics(b));
     };
@@ -128,10 +133,27 @@ export function useArcGIS() {
             map.add(drawLayer);
             drawLayerRef.current = drawLayer;
 
+            const editLayer = new GraphicsLayer({
+                title: "Edit Handles",
+                elevationInfo: { mode: "absolute-height" },
+                listMode: "hide",
+            });
+            map.add(editLayer);
+            editLayerRef.current = editLayer;
+
             const sketchViewModel = new SketchViewModel({
                 view,
                 layer: drawLayer,
                 defaultUpdateOptions: { enableZ: false, tool: "transform", toggleToolOnClick: false, multipleSelectionEnabled: true, enableRotation: false, enableScaling: false },
+                // Snap newly-drawn vertices to existing building edges/vertices
+                // (parent-edge snap for volumes; helpful for custom footprints too).
+                // selfEnabled = snap to the polygon being drawn (helps close cleanly).
+                snappingOptions: {
+                    enabled: true,
+                    selfEnabled: true,
+                    featureEnabled: true,
+                    featureSources: [{ layer: drawLayer, enabled: true }],
+                } as any,
             } as any);
             sketchRef.current = sketchViewModel;
 
@@ -144,6 +166,11 @@ export function useArcGIS() {
                     placeBuildingAt(mp.latitude!, mp.longitude!);
                     return;
                 }
+
+                // Vertex-edit is active — let SketchViewModel keep reshape mode.
+                // Selecting another building or re-entering transform here would
+                // immediately cancel the user's drag.
+                if (editingTargetRef.current) return;
 
                 const hit = await view.hitTest(event);
                 const r = hit.results.find((h: any) => h.graphic && h.graphic.layer === drawLayer);
@@ -163,6 +190,59 @@ export function useArcGIS() {
 
             const createHandle = sketchViewModel.on("create", async (event: any) => {
                 if (event.state !== "complete") return;
+
+                // ----- Volume sketch branch -----
+                const volPending = pendingVolumeRef.current;
+                if (volPending) {
+                    pendingVolumeRef.current = null;
+                    setVolumeDrawMode(false);
+
+                    const sketched = event.graphic as Graphic;
+                    let poly = sketched.geometry as Polygon;
+                    if (!poly?.rings?.length) { drawLayer.remove(sketched); return; }
+                    if (poly.spatialReference?.wkid !== 4326) {
+                        const wmu = await import("@arcgis/core/geometry/support/webMercatorUtils");
+                        const projected = wmu.webMercatorToGeographic(poly) as Polygon;
+                        if (projected) poly = projected;
+                    }
+                    drawLayer.remove(sketched);
+
+                    const parent = buildingsRef.current[volPending.buildingId];
+                    if (!parent) return;
+                    const ring = poly.rings[0].slice(0, poly.rings[0].length - 1) as [number, number][];
+
+                    // Convert each [lng, lat] vertex to LOCAL meters in parent's
+                    // unrotated frame (matching BuildingVolume.ringLocal convention).
+                    const cLat = parent.custom ? parent.custom.centerLat : parent.params.lat;
+                    const cLng = parent.custom ? parent.custom.centerLng : parent.params.lng;
+                    const rotRad = ((parent.params.rot || 0) * Math.PI) / 180;
+                    const cosR = Math.cos(-rotRad), sinR = Math.sin(-rotRad);
+                    const ringLocal: [number, number][] = ring.map(([lng, lat]) => {
+                        const { x, y } = lngLatToLocalMeters(lng, lat, cLat, cLng);
+                        // Inverse-rotate so coords sit in parent's unrotated frame.
+                        return [x * cosR - y * sinR, x * sinR + y * cosR];
+                    });
+
+                    const preset = volPending.preset ?? {};
+                    const vol: BuildingVolume = {
+                        id: `v_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                        ringLocal,
+                        baseOffset: 0,
+                        wh: 3,
+                        roofType: "flat",
+                        pitch: 0,
+                        parapet: 0,
+                        parapetWidth: 0,
+                        wallColorHex: "#e8c060",
+                        roofColorHex: "#e07a30",
+                        ...preset,
+                    };
+                    parent.volumes = [...(parent.volumes ?? []), vol];
+                    renderBuilding(parent);
+                    setCustomRev((r) => r + 1);
+                    return;
+                }
+
                 const pending = pendingCustomRef.current;
                 if (!pending) return;
                 pendingCustomRef.current = null;
@@ -232,6 +312,55 @@ export function useArcGIS() {
             };
 
             const updateHandle = sketchViewModel.on("update", async (event: any) => {
+                // ----- Vertex-edit (reshape) branch -----
+                const handle = event.graphics?.[0];
+                const target = editingTargetRef.current;
+                if (handle?.attributes?.editHandle && target) {
+                    if (event.state !== "active" && event.state !== "complete") return;
+                    let poly = handle.geometry as Polygon;
+                    if (!poly?.rings?.length) return;
+                    if (poly.spatialReference?.wkid !== 4326) {
+                        const wmu = await import("@arcgis/core/geometry/support/webMercatorUtils");
+                        const projected = wmu.webMercatorToGeographic(poly) as Polygon;
+                        if (projected) poly = projected;
+                    }
+                    const ring = poly.rings[0];
+                    const open: [number, number][] = ring
+                        .slice(0, ring.length - 1)
+                        .map((p: any) => [p[0] as number, p[1] as number]);
+                    if (open.length < 3) return;
+
+                    const b = buildingsRef.current[target.buildingId];
+                    if (!b) return;
+
+                    if (target.kind === "building") {
+                        if (!b.custom) return;
+                        b.custom.ringLngLat = open;
+                    } else {
+                        const vol = b.volumes?.find((v) => v.id === target.volumeId);
+                        if (!vol) return;
+                        // Convert lng/lat → parent's UNROTATED local meters.
+                        // (Per-volume rotDeg was reset to 0 by startVertexEdit so we
+                        // don't have to compose two rotations here.)
+                        const cLat = b.custom ? b.custom.centerLat : b.params.lat;
+                        const cLng = b.custom ? b.custom.centerLng : b.params.lng;
+                        const R = 6371000;
+                        const mPerDegLat = R * (Math.PI / 180);
+                        const mPerDegLng = R * Math.cos((cLat * Math.PI) / 180) * (Math.PI / 180);
+                        const rotRad = ((b.params.rot || 0) * Math.PI) / 180;
+                        const cosR = Math.cos(-rotRad), sinR = Math.sin(-rotRad);
+                        vol.ringLocal = open.map(([lng, lat]) => {
+                            const x = (lng - cLng) * mPerDegLng;
+                            const y = (lat - cLat) * mPerDegLat;
+                            return [x * cosR - y * sinR, x * sinR + y * cosR];
+                        });
+                    }
+
+                    renderBuilding(b);
+                    setCustomRev((r) => r + 1);
+                    return;
+                }
+
                 if (event.state === "start") {
                     moveStartCenter = groupCenter(event.graphics ?? []);
                     return;

@@ -43,6 +43,31 @@ interface BuildingContextType {
     customDrawMode: boolean;
     setCustomDrawMode: Dispatch<SetStateAction<boolean>>;
 
+    /**
+     * When set, the next sketch-create result becomes a volume on this building.
+     * `preset` lets the caller override defaults (e.g. wh + colors for a thin
+     * roof patch instead of a full floor).
+     */
+    pendingVolumeRef: MutableRefObject<{
+        buildingId: string;
+        preset?: Partial<import("../types/building.types").BuildingVolume>;
+    } | null>;
+    volumeDrawMode: boolean;
+    setVolumeDrawMode: Dispatch<SetStateAction<boolean>>;
+
+    /**
+     * Active vertex-edit target. When set, sketch update events on the edit
+     * handle write back to this target (parent custom footprint or volume ring).
+     */
+    editingTargetRef: MutableRefObject<
+        | { kind: "building"; buildingId: string }
+        | { kind: "volume"; buildingId: string; volumeId: string }
+        | null
+    >;
+    editMode: boolean;
+    setEditMode: Dispatch<SetStateAction<boolean>>;
+    editLayerRef: MutableRefObject<GraphicsLayer | null>;
+
     roofTypeRef: MutableRefObject<RoofType>;
     roofType: RoofType;
     setRoofType: Dispatch<SetStateAction<RoofType>>;
@@ -92,6 +117,17 @@ export const BuildingProvider: React.FC<{ children: React.ReactNode }> = ({
         name: string;
     } | null>(null);
     const [customDrawMode, setCustomDrawMode] = useState(false);
+
+    const pendingVolumeRef = useRef<{ buildingId: string } | null>(null);
+    const [volumeDrawMode, setVolumeDrawMode] = useState(false);
+
+    const editingTargetRef = useRef<
+        | { kind: "building"; buildingId: string }
+        | { kind: "volume"; buildingId: string; volumeId: string }
+        | null
+    >(null);
+    const [editMode, setEditMode] = useState(false);
+    const editLayerRef = useRef<GraphicsLayer | null>(null);
 
     const [roofType, setRoofType] = useState<RoofType>("gabled");
     const roofTypeRef = useRef(roofType);
@@ -151,6 +187,13 @@ export const BuildingProvider: React.FC<{ children: React.ReactNode }> = ({
                 pendingCustomRef,
                 customDrawMode,
                 setCustomDrawMode,
+                pendingVolumeRef,
+                volumeDrawMode,
+                setVolumeDrawMode,
+                editingTargetRef,
+                editMode,
+                setEditMode,
+                editLayerRef,
                 roofTypeRef,
                 roofType,
                 setRoofType,

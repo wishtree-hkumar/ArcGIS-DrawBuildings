@@ -3,6 +3,7 @@ import Polygon from "@arcgis/core/geometry/Polygon";
 import {
     SavedBuilding,
     BuildingParams,
+    BuildingVolume,
     RoofType,
     Obstacle,
     FaceSpec,
@@ -211,6 +212,37 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
 
     const closed = [...ring, ring[0]];
 
+    // ----- Holes (courtyards) -----
+    // Apply the same scale + rotation pipeline to every inner ring.
+    const transformRing = (r: [number, number][]): [number, number][] => {
+        const sc = scale === 1
+            ? r
+            : r.map(([lng, lat]) => [
+                c.centerLng + (lng - c.centerLng) * scale,
+                c.centerLat + (lat - c.centerLat) * scale,
+            ] as [number, number]);
+        return rot
+            ? sc.map(([lng, lat]) => rotateLngLatAround(lng, lat, c.centerLat, c.centerLng, rot) as [number, number])
+            : sc;
+    };
+    // Signed area in local meters → > 0 means CCW.
+    const signedArea = (r: [number, number][]): number => {
+        let s = 0;
+        for (let i = 0; i < r.length; i++) {
+            const a = lngLatToLocalMeters(r[i][0], r[i][1], c.centerLat, c.centerLng);
+            const b = lngLatToLocalMeters(r[(i + 1) % r.length][0], r[(i + 1) % r.length][1], c.centerLat, c.centerLng);
+            s += a.x * b.y - b.x * a.y;
+        }
+        return s;
+    };
+    const outerCCW = signedArea(ring) > 0;
+    const holes: [number, number][][] = (c.holesLngLat ?? []).map((h) => {
+        const t = transformRing(h);
+        // Holes must be wound opposite to the outer ring (ArcGIS Polygon spec).
+        const holeCCW = signedArea(t) > 0;
+        return holeCCW === outerCCW ? t.slice().reverse() : t;
+    });
+
     let topZ: (lng: number, lat: number) => number;
     if (b.roofType === "monopitch") {
         const ys = ring.map((v) => lngLatToLocalMeters(v[0], v[1], c.centerLat, c.centerLng).y);
@@ -238,11 +270,31 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
         });
     }
 
+    // Inner walls for each hole (extruded down from roof to base).
+    for (const h of holes) {
+        const closedH = [...h, h[0]];
+        for (let i = 0; i < closedH.length - 1; i++) {
+            const [x1, y1] = closedH[i];
+            const [x2, y2] = closedH[i + 1];
+            const t1 = topZ(x1, y1);
+            const t2 = topZ(x2, y2);
+            out.push({
+                desc: "WallInner",
+                color: wallColor,
+                rings: [[[x1, y1, baseZ], [x2, y2, baseZ], [x2, y2, t2], [x1, y1, t1], [x1, y1, baseZ]]],
+            });
+        }
+    }
+
     const roofRing = closed.map(([x, y]) => [x, y, topZ(x, y)] as [number, number, number]);
+    const roofHoleRings = holes.map((h) =>
+        [...h, h[0]].map(([x, y]) => [x, y, topZ(x, y)] as [number, number, number])
+    );
     out.push({
         desc: `Roof_${b.roofType}_custom`,
         color: roofColor,
-        rings: [roofRing],
+        rings: [roofRing, ...roofHoleRings],
+        multiRing: roofHoleRings.length > 0,
     });
 
     if (parapet > 0) {
@@ -375,35 +427,141 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
     return out;
 }
 
+/**
+ * Compute the parent's roof-top elevation (m ASL) — the surface that stacked
+ * volumes sit on. Uses the building's center for sloped roofs (good enough for
+ * v1; flat roofs are exact).
+ */
+function parentRoofTopZ(b: SavedBuilding): number {
+    return b.custom ? b.custom.baseZ + b.params.wh : b.params.elev + b.params.wh;
+}
+
+/** Get parent's center lat/lng (world coords, unrotated frame origin). */
+function parentCenter(b: SavedBuilding): { lat: number; lng: number } {
+    return b.custom
+        ? { lat: b.custom.centerLat, lng: b.custom.centerLng }
+        : { lat: b.params.lat, lng: b.params.lng };
+}
+
+/**
+ * Render a stacked volume by synthesizing a temp SavedBuilding and reusing
+ * `buildCustomFaces`. The volume's local-meter ring is translated to world
+ * lng/lat WITHOUT rotation; parent's rotation is applied by buildCustomFaces.
+ */
+function buildVolumeFaces(parent: SavedBuilding, vol: BuildingVolume): FaceSpec[] {
+    const center = parentCenter(parent);
+    const mPerDegLat = R_EARTH * (Math.PI / 180);
+    const mPerDegLng = R_EARTH * Math.cos((center.lat * Math.PI) / 180) * (Math.PI / 180);
+    const localToLngLat = (mx: number, my: number): [number, number] => [
+        center.lng + mx / mPerDegLng,
+        center.lat + my / mPerDegLat,
+    ];
+    // Pre-rotate volume ring around its OUTER centroid by vol.rotDeg (parent.rot
+    // is applied later by buildCustomFaces, so this composes correctly).
+    const rotDeg = vol.rotDeg ?? 0;
+    const n0 = vol.ringLocal.length;
+    let cxR = 0, cyR = 0;
+    for (const [x, y] of vol.ringLocal) { cxR += x; cyR += y; }
+    cxR /= n0; cyR /= n0;
+    const rad = (rotDeg * Math.PI) / 180;
+    const cosR2 = Math.cos(rad), sinR2 = Math.sin(rad);
+    const applyRot = (pts: [number, number][]): [number, number][] => {
+        if (!rotDeg) return pts;
+        return pts.map(([x, y]) => {
+            const dx = x - cxR, dy = y - cyR;
+            return [cxR + dx * cosR2 - dy * sinR2, cyR + dx * sinR2 + dy * cosR2] as [number, number];
+        });
+    };
+    const ringLngLat = applyRot(vol.ringLocal).map(([x, y]) => localToLngLat(x, y));
+    const holesLngLat = vol.holesLocal?.map((h) => applyRot(h).map(([x, y]) => localToLngLat(x, y)));
+    const baseZ = parentRoofTopZ(parent) + vol.baseOffset;
+
+    const temp: SavedBuilding = {
+        id: parent.id,
+        params: {
+            ...parent.params,
+            wh: vol.wh,
+            parapet: vol.parapet,
+            parapetWidth: vol.parapetWidth,
+            pitch: vol.pitch,
+            // rot inherited from parent so volume rotates with it
+        },
+        roofType: vol.roofType,
+        obstacles: [],
+        custom: {
+            ringLngLat,
+            holesLngLat,
+            centerLat: center.lat,
+            centerLng: center.lng,
+            baseZ,
+            scale: 1,
+        },
+    };
+
+    const faces = buildCustomFaces(temp);
+
+    // Tag faces so they're identifiable + tint per-volume colors if requested.
+    const wallTint = vol.wallColorHex ? hexToRgba(vol.wallColorHex) : null;
+    const roofTint = vol.roofColorHex ? hexToRgba(vol.roofColorHex) : null;
+    return faces.map((f) => {
+        const isWall = f.desc === "Wall" || f.desc === "WallInner";
+        const isRoof = f.desc.startsWith("Roof_");
+        const color = isWall && wallTint ? wallTint : isRoof && roofTint ? roofTint : f.color;
+        return {
+            ...f,
+            color,
+            desc: `Vol_${vol.id}_${f.desc}`,
+            extras: { ...(f.extras || {}), volumeId: vol.id },
+        };
+    });
+}
+
+function hexToRgba(hex: string): number[] {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const bl = parseInt(hex.slice(5, 7), 16);
+    return [r, g, bl, 1];
+}
+
 export function makeBuildingGraphics(b: SavedBuilding): Graphic[] {
     const faces = b.custom ? buildCustomFaces(b) : buildFaces(b.params, b.roofType, b.obstacles);
+    if (b.volumes?.length) {
+        for (const v of b.volumes) {
+            faces.push(...buildVolumeFaces(b, v));
+        }
+    }
     const sr = { wkid: 4326 } as any;
     const graphics: Graphic[] = [];
+    const symbol = (color: number[]) => ({
+        type: "polygon-3d",
+        symbolLayers: [{
+            type: "fill",
+            material: { color },
+            outline: { color: [25, 25, 25, 1], size: 1.2 },
+            edges: { type: "solid", color: [25, 25, 25, 1], size: 1.2, extensionLength: 0 } as any,
+        }],
+    } as any);
+    const attrs = (f: FaceSpec) => ({
+        buildingId: b.id,
+        buildingName: b.params.name,
+        description: f.desc,
+        ...(f.extras || {}),
+    });
     for (const f of faces) {
-        for (const ring of f.rings) {
-            graphics.push(
-                new Graphic({
-                    geometry: new Polygon({
-                        spatialReference: sr,
-                        rings: [ring as any],
-                    }),
-                    symbol: {
-                        type: "polygon-3d",
-                        symbolLayers: [{
-                            type: "fill",
-                            material: { color: f.color },
-                            outline: { color: [25, 25, 25, 1], size: 1.2 },
-                            edges: { type: "solid", color: [25, 25, 25, 1], size: 1.2, extensionLength: 0 } as any,
-                        }],
-                    } as any,
-                    attributes: {
-                        buildingId: b.id,
-                        buildingName: b.params.name,
-                        description: f.desc,
-                        ...(f.extras || {}),
-                    },
-                })
-            );
+        if (f.multiRing) {
+            graphics.push(new Graphic({
+                geometry: new Polygon({ spatialReference: sr, rings: f.rings as any }),
+                symbol: symbol(f.color),
+                attributes: attrs(f),
+            }));
+        } else {
+            for (const ring of f.rings) {
+                graphics.push(new Graphic({
+                    geometry: new Polygon({ spatialReference: sr, rings: [ring as any] }),
+                    symbol: symbol(f.color),
+                    attributes: attrs(f),
+                }));
+            }
         }
     }
     return graphics;
