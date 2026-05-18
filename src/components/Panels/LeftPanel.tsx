@@ -218,7 +218,7 @@ export const LeftPanel: React.FC = () => {
                             </div>
                             <div className="opv-field" style={{ flex: 1, marginBottom: 0 }}>
                                 <label style={{ fontSize: 10, color: "#9ca3af" }}>Width (m)</label>
-                                <input className="opv-input" type="number" step={0.05} min={0} disabled={disabled || !isCustom} value={p?.parapetWidth ?? 0} onChange={(e) => setParam("parapetWidth", Math.max(0, parseFloat(e.target.value) || 0))} />
+                                <input className="opv-input" type="number" step={0.05} min={0} disabled={disabled} value={p?.parapetWidth ?? 0} onChange={(e) => setParam("parapetWidth", Math.max(0, parseFloat(e.target.value) || 0))} />
                             </div>
                         </div>
                     </div>

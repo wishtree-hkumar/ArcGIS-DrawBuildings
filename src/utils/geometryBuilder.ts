@@ -31,16 +31,17 @@ export function buildFaces(
     const wallColor = [200, 200, 200, 1];
     const roofColor = [160, 140, 100, 1];
     const parapetColor = [120, 120, 120, 1];
+    const skirt = 2; // extend walls below elev so they bury into sloped terrain
 
     // Walls + floor
     out.push({
         desc: "Walls",
         color: wallColor,
         rings: [
-            closeRing([C(-hl, -hw, 0), C(hl, -hw, 0), C(hl, -hw, wh), C(-hl, -hw, wh)]),
-            closeRing([C(-hl, hw, 0), C(hl, hw, 0), C(hl, hw, wh), C(-hl, hw, wh)]),
-            closeRing([C(-hl, -hw, 0), C(-hl, hw, 0), C(-hl, hw, wh), C(-hl, -hw, wh)]),
-            closeRing([C(hl, -hw, 0), C(hl, hw, 0), C(hl, hw, wh), C(hl, -hw, wh)]),
+            closeRing([C(-hl, -hw, -skirt), C(hl, -hw, -skirt), C(hl, -hw, wh), C(-hl, -hw, wh)]),
+            closeRing([C(-hl, hw, -skirt), C(hl, hw, -skirt), C(hl, hw, wh), C(-hl, hw, wh)]),
+            closeRing([C(-hl, -hw, -skirt), C(-hl, hw, -skirt), C(-hl, hw, wh), C(-hl, -hw, wh)]),
+            closeRing([C(hl, -hw, -skirt), C(hl, hw, -skirt), C(hl, hw, wh), C(hl, -hw, wh)]),
         ],
     });
 
@@ -113,16 +114,29 @@ export function buildFaces(
     }
 
     if (p.parapet > 0 && rt === "flat") {
-        out.push({
-            desc: "Parapet",
-            color: parapetColor,
-            rings: [
-                closeRing([C(-hl, -hw, wh), C(hl, -hw, wh), C(hl, -hw, wh + p.parapet), C(-hl, -hw, wh + p.parapet)]),
-                closeRing([C(-hl, hw, wh), C(hl, hw, wh), C(hl, hw, wh + p.parapet), C(-hl, hw, wh + p.parapet)]),
-                closeRing([C(-hl, -hw, wh), C(-hl, hw, wh), C(-hl, hw, wh + p.parapet), C(-hl, -hw, wh + p.parapet)]),
-                closeRing([C(hl, -hw, wh), C(hl, hw, wh), C(hl, hw, wh + p.parapet), C(hl, -hw, wh + p.parapet)]),
-            ],
-        });
+        const pw = Math.max(0, Math.min(p.parapetWidth || 0, hl - 1e-3, hw - 1e-3));
+        const top = wh + p.parapet;
+        const rings: [number, number, number][][] = [
+            closeRing([C(-hl, -hw, wh), C(hl, -hw, wh), C(hl, -hw, top), C(-hl, -hw, top)]),
+            closeRing([C(-hl, hw, wh), C(hl, hw, wh), C(hl, hw, top), C(-hl, hw, top)]),
+            closeRing([C(-hl, -hw, wh), C(-hl, hw, wh), C(-hl, hw, top), C(-hl, -hw, top)]),
+            closeRing([C(hl, -hw, wh), C(hl, hw, wh), C(hl, hw, top), C(hl, -hw, top)]),
+        ];
+        if (pw > 0) {
+            const ihl = hl - pw;
+            const ihw = hw - pw;
+            rings.push(
+                closeRing([C(-ihl, -ihw, wh), C(ihl, -ihw, wh), C(ihl, -ihw, top), C(-ihl, -ihw, top)]),
+                closeRing([C(-ihl, ihw, wh), C(ihl, ihw, wh), C(ihl, ihw, top), C(-ihl, ihw, top)]),
+                closeRing([C(-ihl, -ihw, wh), C(-ihl, ihw, wh), C(-ihl, ihw, top), C(-ihl, -ihw, top)]),
+                closeRing([C(ihl, -ihw, wh), C(ihl, ihw, wh), C(ihl, ihw, top), C(ihl, -ihw, top)]),
+                closeRing([C(-hl, -hw, top), C(hl, -hw, top), C(ihl, -ihw, top), C(-ihl, -ihw, top)]),
+                closeRing([C(-hl, hw, top), C(hl, hw, top), C(ihl, ihw, top), C(-ihl, ihw, top)]),
+                closeRing([C(-hl, -hw, top), C(-hl, hw, top), C(-ihl, ihw, top), C(-ihl, -ihw, top)]),
+                closeRing([C(hl, -hw, top), C(hl, hw, top), C(ihl, ihw, top), C(ihl, -ihw, top)]),
+            );
+        }
+        out.push({ desc: "Parapet", color: parapetColor, rings });
     }
 
     const roofZAt = (ry: number): number => {
@@ -226,6 +240,7 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
         topZ = () => baseZ + wh;
     }
 
+    const skirtZ = baseZ - 2;
     for (let i = 0; i < closed.length - 1; i++) {
         const [x1, y1] = closed[i];
         const [x2, y2] = closed[i + 1];
@@ -234,7 +249,7 @@ export function buildCustomFaces(b: SavedBuilding): FaceSpec[] {
         out.push({
             desc: "Wall",
             color: wallColor,
-            rings: [[[x1, y1, baseZ], [x2, y2, baseZ], [x2, y2, t2], [x1, y1, t1], [x1, y1, baseZ]]],
+            rings: [[[x1, y1, skirtZ], [x2, y2, skirtZ], [x2, y2, t2], [x1, y1, t1], [x1, y1, skirtZ]]],
         });
     }
 
