@@ -26,6 +26,7 @@ export interface BuildingParams {
     wh: number;
     rot: number;
     parapet: number;
+    parapetWidth: number;
     pitch: number;
     spans: number;
 }
@@ -36,6 +37,7 @@ export interface CustomFootprint {
     centerLat: number;
     centerLng: number;
     baseZ: number; // sampled ground elevation (m ASL)
+    scale?: number; // uniform scale factor applied around centroid at render time (default 1)
 }
 
 export interface SavedBuilding {

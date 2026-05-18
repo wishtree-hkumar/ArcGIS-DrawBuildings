@@ -53,6 +53,27 @@ export function setEdgeLength(
     return [newLng, newLat];
 }
 
+// Rotate a [lng, lat] point around a center by `rotDeg` degrees, matching
+// toCoord's convention (CCW in local meters: rx = x*cos - y*sin, ry = x*sin + y*cos).
+export function rotateLngLatAround(
+    lng: number,
+    lat: number,
+    cLat: number,
+    cLng: number,
+    rotDeg: number,
+): [number, number] {
+    if (!rotDeg) return [lng, lat];
+    const rad = (rotDeg * Math.PI) / 180;
+    const cosLat = Math.cos((cLat * Math.PI) / 180);
+    const x = (lng - cLng) * (Math.PI / 180) * R_EARTH * cosLat;
+    const y = (lat - cLat) * (Math.PI / 180) * R_EARTH;
+    const rx = x * Math.cos(rad) - y * Math.sin(rad);
+    const ry = x * Math.sin(rad) + y * Math.cos(rad);
+    const newLng = cLng + (rx / (R_EARTH * cosLat)) * (180 / Math.PI);
+    const newLat = cLat + (ry / R_EARTH) * (180 / Math.PI);
+    return [newLng, newLat];
+}
+
 // Convert a [lng, lat] vertex into meters relative to a center.
 export function lngLatToLocalMeters(
     lng: number,
